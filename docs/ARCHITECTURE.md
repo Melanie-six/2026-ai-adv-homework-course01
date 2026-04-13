@@ -36,11 +36,13 @@ Client (Browser)
 │   │   ├── adminMiddleware.js    # 角色檢查，req.user.role 必須為 'admin'
 │   │   ├── sessionMiddleware.js  # 讀取 X-Session-Id header，注入 req.sessionId
 │   │   └── errorHandler.js      # 全域錯誤處理，500 回傳安全訊息，避免洩漏細節
+│   ├── ecpay.js              # 綠界金流工具：CheckMacValue 計算、buildAioParams、queryTradeInfo
 │   └── routes/
 │       ├── authRoutes.js         # POST /register, POST /login, GET /profile
 │       ├── productRoutes.js      # GET /products, GET /products/:id（無需認證）
 │       ├── cartRoutes.js         # GET/POST /cart, PATCH/DELETE /cart/:id（雙模式認證）
-│       ├── orderRoutes.js        # POST/GET /orders, GET /orders/:id, PATCH /orders/:id/pay
+│       ├── orderRoutes.js        # POST/GET /orders, GET /orders/:id, PATCH /orders/:id/pay, GET /orders/:id/ecpay-form, POST /orders/:id/check-payment
+│       ├── ecpayRoutes.js        # GET /ecpay/return（ClientBackURL）, POST /ecpay/notify（ReturnURL）
 │       ├── adminProductRoutes.js # CRUD /admin/products（需 admin）
 │       ├── adminOrderRoutes.js   # GET /admin/orders, GET /admin/orders/:id（需 admin）
 │       └── pageRoutes.js         # 所有 EJS 頁面路由（前台 + 後台）
@@ -135,6 +137,9 @@ npm start
               │     ├── /api/cart → cartRoutes
               │     └── /api/orders → orderRoutes
               │
+              ├── 掛載 ECPay 路由
+              │     └── /ecpay → ecpayRoutes（ClientBackURL、ReturnURL）
+              │
               ├── 掛載 Page 路由
               │     └── / → pageRoutes（EJS 渲染）
               │
@@ -159,6 +164,10 @@ npm start
 | GET | /api/orders | JWT | 我的訂單列表 |
 | GET | /api/orders/:id | JWT | 訂單詳情（僅限本人） |
 | PATCH | /api/orders/:id/pay | JWT | 模擬付款（success/fail） |
+| GET | /api/orders/:id/ecpay-form | JWT | 取得綠界 AIO 付款參數（含 CheckMacValue） |
+| POST | /api/orders/:id/check-payment | JWT | 主動向綠界查詢付款結果並更新訂單狀態 |
+| GET | /ecpay/return | 無 | 綠界 ClientBackURL，主動查詢付款結果後 redirect |
+| POST | /ecpay/notify | 無 | 綠界 ReturnURL，接收付款通知並驗證 CheckMacValue |
 | GET | /api/admin/products | JWT + admin | 後台商品列表 |
 | POST | /api/admin/products | JWT + admin | 新增商品 |
 | PUT | /api/admin/products/:id | JWT + admin | 編輯商品 |
@@ -304,6 +313,7 @@ request 進入 dualAuth
 | recipient_address | TEXT | NOT NULL | 收件地址 |
 | total_amount | INTEGER | NOT NULL | 訂單總金額 |
 | status | TEXT | NOT NULL, DEFAULT 'pending', CHECK IN ('pending','paid','failed') | 付款狀態 |
+| merchant_trade_no | TEXT | - | 綠界 MerchantTradeNo（每次發起付款時更新，用於 /ecpay/notify 反查訂單） |
 | created_at | TEXT | NOT NULL, DEFAULT datetime('now') | 建立時間 |
 
 ### order_items

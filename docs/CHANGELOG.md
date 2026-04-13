@@ -4,6 +4,16 @@
 
 ---
 
+## [Unreleased]
+
+### 修正
+
+- **ECPay `MerchantTradeNo` 重複問題**：重試付款時，同一筆訂單會因為 `MerchantTradeNo` 相同而被綠界拒絕（錯誤 10300028）。現已在 `orderIdToTradeNo()` 加入 Unix 時間戳後綴（6 碼），每次呼叫 `/api/orders/:id/ecpay-form` 都產生不同的交易編號。
+- **ECPay `TotalAmount` 型別問題**：綠界要求金額為整數，改以 `Math.round()` 確保傳入值不含小數點。
+- **移除 `SimulatePaid` 參數**：此參數僅適用於綠界官方測試商店（MerchantID: `2000132`），使用自訂商店代號時會導致錯誤 10100050。已移除，測試時改用綠界提供的測試信用卡號手動操作。
+
+---
+
 ## [1.0.0] — 2026-04-13
 
 ### 新增

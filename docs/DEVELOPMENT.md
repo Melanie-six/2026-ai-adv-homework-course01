@@ -14,12 +14,12 @@
 | `FRONTEND_URL` | CORS 允許的前端來源 | 選填 | `http://localhost:5173` |
 | `ADMIN_EMAIL` | 種子管理員帳號 Email | 選填 | `admin@hexschool.com` |
 | `ADMIN_PASSWORD` | 種子管理員帳號密碼 | 選填 | `12345678` |
-| `ECPAY_MERCHANT_ID` | 綠界商店代號（保留欄位） | 選填 | `3002607` |
-| `ECPAY_HASH_KEY` | 綠界 Hash Key（保留欄位） | 選填 | — |
-| `ECPAY_HASH_IV` | 綠界 Hash IV（保留欄位） | 選填 | — |
-| `ECPAY_ENV` | 綠界環境（staging/production）（保留欄位） | 選填 | `staging` |
+| `ECPAY_MERCHANT_ID` | 綠界商店代號 | 選填 | `3002607` |
+| `ECPAY_HASH_KEY` | 綠界 Hash Key（CheckMacValue 計算用） | 選填 | — |
+| `ECPAY_HASH_IV` | 綠界 Hash IV（CheckMacValue 計算用） | 選填 | — |
+| `ECPAY_ENV` | 綠界環境：`staging`（測試）或 `production`（正式） | 選填 | `staging` |
 
-> ECPay 相關變數目前在程式碼中未被引用，保留供未來串接使用。
+> 測試環境使用綠界提供的測試商店（`3002607`）。`SimulatePaid` 自動付款僅適用於官方示範商店（`2000132`），不適用於其他商店代號，請以測試信用卡 `4311-9522-2222-2222` / CVV `222` 手動完成付款。
 
 ### NODE_ENV 的影響
 

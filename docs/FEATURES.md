@@ -9,6 +9,7 @@
 | 購物車（訪客 + 登入雙模式） | 完成 | `src/routes/cartRoutes.js` |
 | 訂單建立與查詢 | 完成 | `src/routes/orderRoutes.js` |
 | 模擬付款 | 完成 | `src/routes/orderRoutes.js` |
+| ECPay 綠界金流 | 完成 | `src/routes/orderRoutes.js`, `src/routes/ecpayRoutes.js`, `src/ecpay.js` |
 | 後台商品 CRUD | 完成 | `src/routes/adminProductRoutes.js` |
 | 後台訂單列表與詳情 | 完成 | `src/routes/adminOrderRoutes.js` |
 | EJS 前台頁面 | 完成 | `src/routes/pageRoutes.js` |
@@ -268,6 +269,55 @@
 
 ---
 
+#### GET /api/orders/:id/ecpay-form — 取得綠界付款參數
+
+**認證**：JWT 必要
+
+**業務邏輯**：
+1. 驗證訂單屬於當前使用者且 status 為 `'pending'`
+2. 查詢訂單明細（order_items）
+3. 呼叫 `buildAioParams(order, items)` 組裝綠界 AIO 所有必要參數，包含：
+   - `MerchantTradeNo`：UUID 前 14 碼 + Unix 時間戳後 6 碼（每次呼叫皆產生唯一值，避免綠界重複訂單號錯誤）
+   - `TotalAmount`：`Math.round(order.total_amount)`（綠界要求整數）
+   - `CheckMacValue`：SHA256 + PHP urlencode 規格計算
+4. 將本次 `MerchantTradeNo` 存回 `orders.merchant_trade_no`（供 `/ecpay/notify` 反查訂單用）
+5. 回傳 `{ actionUrl, params }`，前端收到後自行組成 hidden form 並 submit
+
+**回傳**：
+```json
+{
+  "data": {
+    "actionUrl": "https://payment-stage.ecpay.com.tw/Cashier/AioCheckOut/V5",
+    "params": {
+      "MerchantID": "...",
+      "MerchantTradeNo": "...",
+      "CheckMacValue": "...",
+      ...
+    }
+  },
+  "error": null,
+  "message": "成功"
+}
+```
+
+**錯誤情境**：
+- `400 ORDER_NOT_PENDING`：訂單已付款或已失敗
+- `404 NOT_FOUND`：訂單不存在或不屬於本人
+
+---
+
+#### POST /api/orders/:id/check-payment — 主動查詢付款結果
+
+**認證**：JWT 必要
+
+**業務邏輯**：
+1. 驗證訂單屬於當前使用者
+2. 若訂單已非 `'pending'`，直接回傳目前狀態（避免重複查詢）
+3. 呼叫綠界 `QueryTradeInfo V5` API，傳入 `merchant_trade_no`
+4. `TradeStatus === '1'` → 更新 status 為 `'paid'`；否則維持現狀
+
+---
+
 ### 5. 後台商品管理（Admin Products）
 
 所有後台路由皆需 `authMiddleware + adminMiddleware`（JWT + role='admin'）。
@@ -364,3 +414,70 @@ function renderFront(res, page, locals = {}) {
 `pageScript` local 變數指定該頁面要載入哪個 `public/js/pages/*.js`（由 layout EJS 決定 script 標籤）。
 
 訂單詳情頁面接受 `?payment=success` 或 `?payment=fail` 查詢參數（`paymentResult` local），顯示付款結果通知。
+
+---
+
+### 8. ECPay 綠界金流
+
+#### 付款流程概述
+
+```
+前端呼叫 GET /api/orders/:id/ecpay-form
+    │
+    └── 取得 actionUrl + params（含 CheckMacValue）
+            │
+            └── 前端組成 hidden form，POST 至綠界
+                    │
+                    ├── 使用者完成付款
+                    │       │
+                    │       ├── 綠界 POST /ecpay/notify（ReturnURL）
+                    │       │       └── 驗證 CheckMacValue → 更新 status='paid'
+                    │       │
+                    │       └── 使用者點「返回商店」→ GET /ecpay/return（ClientBackURL）
+                    │               └── 呼叫 QueryTradeInfo → 更新狀態 → redirect 訂單詳情頁
+                    │
+                    └── 使用者離開但未確認 → 前端輪詢 POST /api/orders/:id/check-payment
+```
+
+#### src/ecpay.js — 核心工具模組
+
+- **`generateCheckMacValue(params)`**：依照綠界 SHA256 規格計算 CheckMacValue。流程：排序參數 → 拼接字串 → PHP urlencode → `~` 替換 → 轉小寫 → .NET 特殊字元還原 → SHA256 hex 大寫。
+- **`verifyCheckMacValue(params)`**：使用 `crypto.timingSafeEqual` 驗證綠界回傳的 CheckMacValue，防止 timing attack。
+- **`buildAioParams(order, items)`**：組裝送往綠界的完整表單參數，`MerchantTradeNo` 含時間戳後綴以確保每次唯一，`TotalAmount` 以 `Math.round()` 確保整數。
+- **`queryTradeInfo(merchantTradeNo)`**：以 HTTP POST 主動呼叫綠界 `QueryTradeInfo V5`，回傳解析後的物件（含 `TradeStatus`）。
+- **`orderIdToTradeNo(orderId, suffix)`**：將 UUID 轉換為最多 20 碼的英數字，suffix 為時間戳後綴。
+
+#### GET /ecpay/return — ClientBackURL
+
+使用者在綠界付款頁面點「返回商店」後觸發（GET 請求，帶 `?orderId=<uuid>`）。
+
+**業務邏輯**：
+1. 若訂單已是 `'paid'` → redirect `/orders/:id?payment=success`
+2. 若訂單不是 `'pending'` → redirect `/orders/:id?payment=failed`
+3. 呼叫 `QueryTradeInfo` 確認付款結果：
+   - `TradeStatus === '1'` → 更新為 `'paid'`，redirect `?payment=success`
+   - 其他 → redirect `?payment=pending`（使用者可能取消或尚未完成）
+
+#### POST /ecpay/notify — ReturnURL
+
+綠界伺服器主動 POST 付款通知（非使用者觸發）。
+
+**業務邏輯**：
+1. 驗證 `CheckMacValue`（`verifyCheckMacValue`），驗證失敗仍回傳 `1|OK`（避免重試風暴）
+2. `RtnCode === '1'` → 以 `MerchantTradeNo` 查詢訂單，status 為 `'pending'` 時更新為 `'paid'`
+3. **必須回傳純文字 `1|OK`（HTTP 200）**，否則綠界會持續重試
+
+#### 環境設定
+
+| 環境變數 | 說明 |
+|----------|------|
+| `ECPAY_MERCHANT_ID` | 綠界商店代號 |
+| `ECPAY_HASH_KEY` | CheckMacValue 計算用 Hash Key |
+| `ECPAY_HASH_IV` | CheckMacValue 計算用 Hash IV |
+| `ECPAY_ENV` | `staging`（測試）或 `production`（正式），決定 API URL |
+| `BASE_URL` | 伺服器對外 URL，用於組裝 ReturnURL 和 ClientBackURL |
+
+**測試環境注意事項**：
+- 使用商店代號 `3002607` 時，不支援 `SimulatePaid` 參數（僅 `2000132` 支援）
+- 測試信用卡：`4311-9522-2222-2222`，CVV：`222`，有效年月：任何未過期日期
+- 本地開發時 `ReturnURL`（`/ecpay/notify`）無法被綠界呼叫，付款確認依賴 `/ecpay/return` 或 `/api/orders/:id/check-payment`
