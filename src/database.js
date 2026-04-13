@@ -68,6 +68,12 @@ function initializeDatabase() {
     );
   `);
 
+  // Migration: 新增 merchant_trade_no 欄位（ECPay 整合用）
+  const orderCols = db.prepare('PRAGMA table_info(orders)').all();
+  if (!orderCols.some(c => c.name === 'merchant_trade_no')) {
+    db.prepare('ALTER TABLE orders ADD COLUMN merchant_trade_no TEXT').run();
+  }
+
   // Seed data
   seedAdminUser();
   seedProducts();

@@ -34,6 +34,9 @@ app.use('/api/products', require('./src/routes/productRoutes'));
 app.use('/api/cart', require('./src/routes/cartRoutes'));
 app.use('/api/orders', require('./src/routes/orderRoutes'));
 
+// ECPay browser-facing routes (ClientBackURL + ReturnURL)
+app.use('/ecpay', require('./src/routes/ecpayRoutes'));
+
 // Page Routes
 app.use('/', require('./src/routes/pageRoutes'));
 

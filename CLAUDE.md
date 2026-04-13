@@ -41,3 +41,9 @@ npm run openapi
 - [./docs/FEATURES.md](./docs/FEATURES.md) — 功能列表與完成狀態
 - [./docs/TESTING.md](./docs/TESTING.md) — 測試規範與指南
 - [./docs/CHANGELOG.md](./docs/CHANGELOG.md) — 更新日誌
+
+## 回覆方式
+
+- 儘量使用簡單易懂的中文問我問題或說明
+- 如果是特殊名詞可以用英文
+- 執行任務過程中可以使用英文

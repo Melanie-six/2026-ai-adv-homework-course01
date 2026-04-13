@@ -28,19 +28,42 @@ createApp({
       return Object.keys(errors.value).length === 0;
     }
 
+    function submitEcpayForm(actionUrl, params) {
+      const form = document.createElement('form');
+      form.method = 'POST';
+      form.action = actionUrl;
+      form.acceptCharset = 'UTF-8';
+      Object.entries(params).forEach(function ([key, value]) {
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = key;
+        input.value = value;
+        form.appendChild(input);
+      });
+      document.body.appendChild(form);
+      form.submit();
+    }
+
     async function submitOrder() {
       if (!validate() || submitting.value) return;
       submitting.value = true;
       try {
+        // Step 1: 建立訂單
         const res = await apiFetch('/api/orders', {
           method: 'POST',
           body: JSON.stringify(form.value)
         });
-        Notification.show('訂單已建立', 'success');
-        window.location.href = '/orders/' + res.data.id;
+        const orderId = res.data.id;
+        Notification.show('訂單已建立，正在前往付款頁面...', 'success');
+
+        // Step 2: 取得 ECPay 付款參數
+        const ecpayRes = await apiFetch('/api/orders/' + orderId + '/ecpay-form');
+        const { actionUrl, params } = ecpayRes.data;
+
+        // Step 3: 自動提交至綠界付款頁面（頁面會離開，不 reset submitting）
+        submitEcpayForm(actionUrl, params);
       } catch (err) {
         Notification.show(err?.data?.message || '訂單建立失敗', 'error');
-      } finally {
         submitting.value = false;
       }
     }

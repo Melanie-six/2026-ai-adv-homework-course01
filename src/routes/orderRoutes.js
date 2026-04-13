@@ -2,6 +2,7 @@ const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../database');
 const authMiddleware = require('../middleware/authMiddleware');
+const { buildAioParams, queryTradeInfo, orderIdToTradeNo } = require('../ecpay');
 
 const router = express.Router();
 
@@ -310,86 +311,14 @@ router.get('/:id', (req, res) => {
 });
 
 /**
- * @openapi
- * /api/orders/{id}/pay:
- *   patch:
- *     summary: 模擬付款（更新訂單付款狀態）
- *     tags: [Orders]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [action]
- *             properties:
- *               action:
- *                 type: string
- *                 enum: [success, fail]
- *     responses:
- *       200:
- *         description: 付款狀態更新成功
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 data:
- *                   type: object
- *                   properties:
- *                     id:
- *                       type: string
- *                     order_no:
- *                       type: string
- *                     total_amount:
- *                       type: integer
- *                     status:
- *                       type: string
- *                     created_at:
- *                       type: string
- *                     items:
- *                       type: array
- *                       items:
- *                         type: object
- *                         properties:
- *                           product_name:
- *                             type: string
- *                           product_price:
- *                             type: integer
- *                           quantity:
- *                             type: integer
- *                 error:
- *                   type: string
- *                   nullable: true
- *                 message:
- *                   type: string
- *       400:
- *         description: action 無效或訂單狀態不是 pending
- *       404:
- *         description: 訂單不存在
+ * GET /:id/ecpay-form
+ * 取得綠界 AIO 付款所需的參數（含 CheckMacValue）。
+ * 前端收到後自行組成 hidden form 並 submit 至綠界。
  */
-router.patch('/:id/pay', (req, res) => {
-  const { action } = req.body;
-  const userId = req.user.userId;
+router.get('/:id/ecpay-form', (req, res) => {
+  const order = db.prepare('SELECT * FROM orders WHERE id = ? AND user_id = ?')
+    .get(req.params.id, req.user.userId);
 
-  const actionMap = { success: 'paid', fail: 'failed' };
-  if (!action || !actionMap[action]) {
-    return res.status(400).json({
-      data: null,
-      error: 'VALIDATION_ERROR',
-      message: 'action 必須為 success 或 fail'
-    });
-  }
-
-  const order = db.prepare('SELECT * FROM orders WHERE id = ? AND user_id = ?').get(req.params.id, userId);
   if (!order) {
     return res.status(404).json({ data: null, error: 'NOT_FOUND', message: '訂單不存在' });
   }
@@ -397,22 +326,80 @@ router.patch('/:id/pay', (req, res) => {
   if (order.status !== 'pending') {
     return res.status(400).json({
       data: null,
-      error: 'INVALID_STATUS',
-      message: '訂單狀態不是 pending，無法付款'
+      error: 'ORDER_NOT_PENDING',
+      message: '訂單已付款或已失敗，無法進行付款'
     });
   }
 
-  const newStatus = actionMap[action];
-  db.prepare('UPDATE orders SET status = ? WHERE id = ?').run(newStatus, order.id);
-
-  const updated = db.prepare('SELECT * FROM orders WHERE id = ?').get(order.id);
   const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(order.id);
+  const { params, actionUrl } = buildAioParams(order, items);
+
+  // 將 MerchantTradeNo 存回訂單，供 /ecpay/notify 反查使用
+  db.prepare('UPDATE orders SET merchant_trade_no = ? WHERE id = ?')
+    .run(params.MerchantTradeNo, order.id);
 
   res.json({
-    data: { ...updated, items },
+    data: { actionUrl, params },
     error: null,
-    message: action === 'success' ? '付款成功' : '付款失敗'
+    message: '成功'
   });
+});
+
+/**
+ * POST /:id/check-payment
+ * 主動向綠界查詢付款結果，更新訂單狀態後回傳最新訂單資料。
+ * 適用於使用者付款後未點「返回商店」的情況。
+ */
+router.post('/:id/check-payment', async (req, res) => {
+  const order = db.prepare('SELECT * FROM orders WHERE id = ? AND user_id = ?')
+    .get(req.params.id, req.user.userId);
+
+  if (!order) {
+    return res.status(404).json({ data: null, error: 'NOT_FOUND', message: '訂單不存在' });
+  }
+
+  if (order.status === 'paid') {
+    const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(order.id);
+    return res.json({
+      data: { ...order, items },
+      error: null,
+      message: '訂單已完成付款'
+    });
+  }
+
+  if (order.status === 'failed') {
+    return res.status(400).json({
+      data: null,
+      error: 'ORDER_FAILED',
+      message: '訂單已標記為付款失敗'
+    });
+  }
+
+  try {
+    const merchantTradeNo = order.merchant_trade_no || orderIdToTradeNo(order.id);
+    const tradeInfo = await queryTradeInfo(merchantTradeNo);
+
+    if (tradeInfo.TradeStatus === '1') {
+      db.prepare('UPDATE orders SET status = ? WHERE id = ?').run('paid', order.id);
+    }
+
+    const updated = db.prepare('SELECT * FROM orders WHERE id = ?').get(order.id);
+    const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(order.id);
+
+    const isPaid = updated.status === 'paid';
+    res.json({
+      data: { ...updated, items },
+      error: null,
+      message: isPaid ? '付款確認成功' : '尚未付款或付款處理中'
+    });
+  } catch (err) {
+    console.error('[ECPay] check-payment 查詢失敗:', err.message);
+    res.status(500).json({
+      data: null,
+      error: 'ECPAY_QUERY_FAILED',
+      message: '查詢付款狀態失敗，請稍後再試'
+    });
+  }
 });
 
 module.exports = router;
